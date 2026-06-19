@@ -50,7 +50,7 @@ function App() {
   const [activityFeed, setActivityFeed] = useState([]);
   const [toast, setToast] = useState({ message: '', visible: false });
   const [bounceCount, setBounceCount] = useState(false);
-  const [timeTick, setTimeTick] = useState(0); // Forces re-render of timestamp strings
+  const [timeTick, setTimeTick] = useState(0);
 
   // Refs for tracking socket connection and pending optimistic transactions
   const socketRef = useRef(null);
@@ -72,11 +72,9 @@ function App() {
       }
     }
 
-    // Generate random credentials if not found
     const randId = Math.floor(1000 + Math.random() * 9000);
     const generatedUsername = `User#${randId}`;
     const randHue = Math.floor(Math.random() * 360);
-    // Use fixed saturation 85%, lightness 60% for a premium vibrant game look
     const generatedColor = hslToHex(randHue, 85, 60);
     
     const newUser = { username: generatedUsername, color: generatedColor };
@@ -86,16 +84,18 @@ function App() {
 
   // 2. Establish Socket connection and listen for server events
   useEffect(() => {
-    // Open Socket.IO connection
     const socket = io(SOCKET_URL);
     socketRef.current = socket;
 
-    // A. Received full board init state
     socket.on('init', (serverTiles) => {
-      setTiles(serverTiles);
+      // Ensure every tile has a valid id
+      const safeTiles = Array.from({ length: 2500 }, (_, i) => {
+        const t = serverTiles[i];
+        return t ? { id: i, owner: t.owner || null, color: t.color || null, captured_at: t.captured_at || null } : { id: i, owner: null, color: null, captured_at: null };
+      });
+      setTiles(safeTiles);
 
-      // Populate initial activity feed with recent captures (non-null tiles)
-      const capturedTiles = serverTiles
+      const capturedTiles = safeTiles
         .filter(t => t.owner && t.captured_at)
         .sort((a, b) => b.captured_at - a.captured_at)
         .slice(0, 20);
@@ -103,15 +103,12 @@ function App() {
       setActivityFeed(capturedTiles);
     });
 
-    // B. Online user count update
     socket.on('user_count', ({ count }) => {
       setOnlineCount(count);
       setBounceCount(true);
     });
 
-    // C. Single tile update (broadcasted by server)
     socket.on('tile_updated', ({ tileId, owner, color, captured_at }) => {
-      // Clear from pending optimistic captures since it's confirmed
       delete pendingCaptures.current[tileId];
 
       setTiles(prev => {
@@ -123,25 +120,23 @@ function App() {
             owner,
             color,
             captured_at,
-            pulse: !isOwnUpdate, // Only pulse visual effect if captured by another user
+            pulse: !isOwnUpdate,
             flashRed: false
           };
         }
         return next;
       });
 
-      // Clear pulse animation class after 500ms
       setTimeout(() => {
         setTiles(prev => {
           const next = [...prev];
           if (next[tileId]) {
-            next[tileId].pulse = false;
+            next[tileId] = { ...next[tileId], pulse: false };
           }
           return next;
         });
       }, 500);
 
-      // Append to live activity feed (slide-in)
       if (owner) {
         setActivityFeed(prev => {
           const fresh = [{ tileId, owner, color, captured_at }, ...prev];
@@ -150,38 +145,30 @@ function App() {
       }
     });
 
-    // D. Capture rejected (usually due to 500ms cooldown)
     socket.on('capture_rejected', ({ tileId, reason }) => {
       if (reason === 'cooldown') {
-        // Render cooldown toast for 1.5 seconds
         setToast({ message: 'Slow down! ⏱', visible: true });
         
-        // Revert the optimistic change and trigger flash red animation
         setTiles(prev => {
           const next = [...prev];
           const original = pendingCaptures.current[tileId];
           if (original && next[tileId]) {
-            next[tileId] = {
-              ...original,
-              flashRed: true
-            };
+            next[tileId] = { ...original, flashRed: true };
           }
           return next;
         });
 
-        // Reset the red flash styling after animation ends
         setTimeout(() => {
           setTiles(prev => {
             const next = [...prev];
             if (next[tileId]) {
-              next[tileId].flashRed = false;
+              next[tileId] = { ...next[tileId], flashRed: false };
             }
             return next;
           });
         }, 600);
       }
       
-      // Cleanup pending cache
       delete pendingCaptures.current[tileId];
     });
 
@@ -190,7 +177,7 @@ function App() {
     };
   }, [user.username]);
 
-  // 3. Clear bounceCount state class after animation finishes
+  // 3. Clear bounceCount after animation
   useEffect(() => {
     if (bounceCount) {
       const timer = setTimeout(() => setBounceCount(false), 300);
@@ -198,7 +185,7 @@ function App() {
     }
   }, [bounceCount]);
 
-  // 4. Set interval ticker to dynamically refresh "time ago" captions
+  // 4. Ticker for "time ago" refresh
   useEffect(() => {
     const interval = setInterval(() => {
       setTimeTick(t => t + 1);
@@ -206,27 +193,24 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // 5. Save onboarding user configurations
+  // 5. Save onboarding
   const handleStartGame = () => {
     localStorage.setItem('gridwars_user', JSON.stringify(user));
     setShowOnboarding(false);
   };
 
-  // 6. Grid interaction handler
+  // 6. Grid click handler
   const handleTileClick = (tileId) => {
     const socket = socketRef.current;
     if (!socket || showOnboarding) return;
 
-    // Quick client-side debounce (200ms) to filter accidental double clicks
     const now = Date.now();
     if (now - lastClickTime.current < 200) return;
     lastClickTime.current = now;
 
-    // Cache the original tile state for potential rollback
     const originalTile = tiles[tileId];
     pendingCaptures.current[tileId] = originalTile;
 
-    // Optimistic UI update: color the clicked tile immediately
     setTiles(prev => {
       const next = [...prev];
       if (next[tileId]) {
@@ -242,7 +226,6 @@ function App() {
       return next;
     });
 
-    // Send capture command
     socket.emit('capture_tile', {
       tileId,
       username: user.username,
@@ -250,11 +233,11 @@ function App() {
     });
   };
 
-  // 7. Calculate real-time leaderboard statistics from current tile states
+  // 7. Leaderboard
   const getLeaderboard = () => {
     const ownerCounts = {};
     tiles.forEach(tile => {
-      if (tile.owner) {
+      if (tile && tile.owner) {
         if (!ownerCounts[tile.owner]) {
           ownerCounts[tile.owner] = { count: 0, color: tile.color };
         }
@@ -263,11 +246,7 @@ function App() {
     });
 
     return Object.entries(ownerCounts)
-      .map(([username, data]) => ({
-        username,
-        count: data.count,
-        color: data.color
-      }))
+      .map(([username, data]) => ({ username, count: data.count, color: data.color }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
   };
@@ -296,7 +275,7 @@ function App() {
           <div 
             className="user-profile-badge" 
             style={{ 
-              backgroundColor: `${user.color}26`, // 15% opacity hex
+              backgroundColor: `${user.color}26`,
               borderColor: `${user.color}40`
             }}
           >
@@ -311,13 +290,14 @@ function App() {
         <div className="grid-wrapper">
           <div className="grid-board">
             {tiles.map((tile) => {
-              // Construct element classes
+              // Guard against undefined tiles
+              if (!tile || tile.id === undefined) return null;
+
               const classes = [
                 'tile',
                 tile.owner ? 'claimed' : 'unclaimed',
                 tile.pulse ? 'just-captured' : '',
                 tile.flashRed ? 'flash-red' : '',
-                // Stagger fade-in on first load
                 activityFeed.length === 0 ? 'tile-stagger-in' : ''
               ].filter(Boolean).join(' ');
 
@@ -331,9 +311,8 @@ function App() {
                     animationDelay: activityFeed.length === 0 ? `${(tile.id % 15) * 20}ms` : '0ms'
                   }}
                 >
-                  {/* CSS Tooltip */}
                   <div className="tile-tooltip">
-                    #{tile.id.toString().padStart(4, '0')} · {tile.owner || 'Unclaimed'} 
+                    #{String(tile.id).padStart(4, '0')} · {tile.owner || 'Unclaimed'} 
                     {tile.captured_at ? ` · ${formatTimeAgo(tile.captured_at)}` : ''}
                   </div>
                 </div>
@@ -344,7 +323,6 @@ function App() {
 
         {/* Right Sidebar */}
         <aside className="sidebar">
-          {/* Section 1: Live Feed */}
           <section className="sidebar-section activity-feed-section">
             <h2 className="section-title">Live Activity</h2>
             <div className="activity-feed">
@@ -357,7 +335,7 @@ function App() {
                   <div className="feed-item" key={`${item.tileId}-${item.captured_at}-${idx}`}>
                     <div className="feed-dot" style={{ backgroundColor: item.color }} />
                     <div className="feed-text">
-                      <strong>{item.owner}</strong> captured #{item.tileId.toString().padStart(4, '0')}
+                      <strong>{item.owner}</strong> captured #{String(item.tileId).padStart(4, '0')}
                     </div>
                     <div className="feed-time">
                       {formatTimeAgo(item.captured_at)}
@@ -368,7 +346,6 @@ function App() {
             </div>
           </section>
 
-          {/* Section 2: Leaderboard */}
           <section className="sidebar-section">
             <h2 className="section-title">Top Factions</h2>
             <div className="leaderboard-list">
@@ -432,10 +409,7 @@ function App() {
                 <span>Faction Color:</span>
                 <div 
                   className="color-swatch" 
-                  style={{ 
-                    color: user.color, 
-                    backgroundColor: user.color 
-                  }} 
+                  style={{ color: user.color, backgroundColor: user.color }} 
                 />
               </div>
             </div>
