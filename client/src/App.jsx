@@ -4,7 +4,7 @@ import { io } from 'socket.io-client';
 // Determine Socket server URL based on the environment
 const SOCKET_URL = window.location.hostname === 'localhost' 
   ? 'http://localhost:5001' 
-  : window.location.origin;
+  : 'https://grid-wars-g0yi.onrender.com';
 
 // Helper: Convert HSL to Hex format (ensures predictable contrast/brightness)
 function hslToHex(h, s, l) {
